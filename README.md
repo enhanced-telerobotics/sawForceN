@@ -45,3 +45,13 @@ The device has no documented torque output or saturation flag in this protocol;
 zero torque is a placeholder, not a measurement. Interval statistics reflect host
 receive timing. A bounded queue retains up to 2000 pending samples; prolonged ROS
 stalls can drop oldest samples. No automatic reconnect is performed.
+
+## Single-arm launch
+
+```bash
+ros2 launch force_n single_arm.launch.py
+```
+
+Starts the GUI and sensor node on `/dev/ttyACM0` in namespace `/PSM1/shaft`.
+Publishes `/PSM1/shaft/measured_cf` and `/PSM1/shaft/status`; hardware tare is available
+at `/PSM1/shaft/rebias`.
