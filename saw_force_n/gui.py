@@ -1,33 +1,64 @@
 """ATI-style Sensor Stats / Interval Stats tabs with hardware Rebias."""
 from PyQt5 import QtWidgets, QtCore
+from pathlib import Path
 
 
 class Window(QtWidgets.QWidget):
-    def __init__(self, driver):
+    def __init__(self, driver, namespace='/'):
         super().__init__()
         self.driver = driver
-        self.setWindowTitle('Forcen Force Sensor (N, N·m)')
+        arm = next((part for part in namespace.split('/')
+                    if part in ('PSM1', 'PSM2', 'PSM3')), None)
+        device = Path(driver.port).name
+        tool = device if device in ('CLASSIC_LND', 'S_LND', 'CLASSIC_MBF', 'S_MBF') else None
+        identity = f"{arm or namespace} — {tool or device}"
+        self.setWindowTitle(f'Forcen Force Sensor — {identity}')
         layout = QtWidgets.QVBoxLayout(self)
+        self.identity = QtWidgets.QLabel(
+            f"Arm: {arm or 'Unassigned'}    |    Tool: {tool or 'Unknown'}")
+        self.identity.setTextFormat(QtCore.Qt.PlainText)
+        font = self.identity.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 2)
+        self.identity.setFont(font)
+        layout.addWidget(self.identity)
+        self.connection = QtWidgets.QLabel(f'Device: {driver.port}\nNamespace: {namespace}')
+        self.connection.setTextFormat(QtCore.Qt.PlainText)
+        self.connection.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.connection.setWordWrap(True)
+        layout.addWidget(self.connection)
         tabs = QtWidgets.QTabWidget()
         layout.addWidget(tabs)
         sensor = QtWidgets.QWidget()
         body = QtWidgets.QVBoxLayout(sensor)
-        body.addWidget(QtWidgets.QLabel('Calibrated forces [N]. Torque [N·m] is zero (not measured).'))
+        measurement_note = QtWidgets.QLabel(
+            'Force is measured in newtons (N). Torque is not measured; displayed zeros are placeholders.')
+        measurement_note.setWordWrap(True)
+        body.addWidget(measurement_note)
         self.table = QtWidgets.QTableWidget(2, 3)
         self.table.setHorizontalHeaderLabels(['X', 'Y', 'Z'])
         self.table.setVerticalHeaderLabels(['Force [N]', 'Torque [N·m]'])
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         body.addWidget(self.table)
         self.info = QtWidgets.QLabel('Connecting')
         self.info.setWordWrap(True)
         body.addWidget(self.info)
-        self.button = QtWidgets.QPushButton('Rebias (hardware tare)')
+        self.button = QtWidgets.QPushButton('Zero force (hardware tare)')
+        self.button.setToolTip('Set the current unloaded force readings to zero using the sensor’s hardware tare.')
         self.button.clicked.connect(self.rebias)
         body.addWidget(self.button)
-        note = QtWidgets.QLabel('Before taring: unload the sensor and keep it stationary.\n'
-                               'Manual §9 recommends 5 minutes warm-up and re-taring after orientation changes.')
+        note = QtWidgets.QLabel(
+            'Allow at least 5 minutes of warm-up before zeroing.\n'
+            'Remove external loads and keep the tool still, then click “Zero force”.\n'
+            'Zero again after changing the tool’s orientation or cycling sensor power.')
+        note.setWordWrap(True)
         body.addWidget(note)
+        body.addStretch()
         tabs.addTab(sensor, 'Sensor Stats')
         self.stats = QtWidgets.QLabel()
         self.stats.setMargin(15)
@@ -35,7 +66,15 @@ class Window(QtWidgets.QWidget):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(100)
-        self.resize(600, 350)
+        # Populate and style the widgets before calculating the initial size.
+        self.refresh()
+        self.table.resizeRowsToContents()
+        self.table.setFixedHeight(
+            self.table.horizontalHeader().sizeHint().height()
+            + sum(self.table.rowHeight(row) for row in range(self.table.rowCount()))
+            + 2 * self.table.frameWidth())
+        layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
+        self.resize(self.sizeHint().expandedTo(QtCore.QSize(640, 460)))
 
     def rebias(self):
         self.driver.request_tare()

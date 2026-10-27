@@ -66,7 +66,7 @@ def main():
             from PyQt5 import QtWidgets, QtCore
             from .gui import Window
             app = QtWidgets.QApplication([sys.argv[0]])
-            window = Window(node.driver)
+            window = Window(node.driver, namespace=node.get_namespace())
             timer = QtCore.QTimer()
             def tick():
                 if rclpy.ok():
