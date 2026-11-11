@@ -6,6 +6,7 @@ import time
 from collections import deque
 import serial
 from .protocol import Framer, parse_sample
+from .ports import resolve_port
 
 
 class Driver:
@@ -97,7 +98,8 @@ class Driver:
 
     def run(self):
         try:
-            with serial.Serial(self.port, self.baud, timeout=.1, write_timeout=1, exclusive=True) as self.serial:
+            with serial.Serial(resolve_port(self.port), self.baud, timeout=.1,
+                               write_timeout=1, exclusive=True) as self.serial:
                 self.framer = Framer()
                 try:
                     self.configure()

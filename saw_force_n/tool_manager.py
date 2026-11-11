@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import dataclass
+import os
 import re
 import signal
 import subprocess
@@ -81,7 +82,8 @@ class ToolManager:
         if reader.deadline is None:
             self.logger.info(f'Stopping /dev/{alias} on /{reader.arm}/shaft')
             try:
-                reader.process.send_signal(signal.SIGINT)
+                reader.process.send_signal(
+                    signal.CTRL_BREAK_EVENT if os.name == 'nt' else signal.SIGINT)
             except ProcessLookupError:
                 pass
             reader.deadline = self.clock() + 5.0
@@ -134,7 +136,9 @@ class ToolManager:
                 command.append('--no-gui')
             command += ['--ros-args', '-r', f'__ns:=/{arm}/shaft']
             try:
-                process = self.popen(command, start_new_session=True)
+                options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
+                           if os.name == 'nt' else {'start_new_session': True})
+                process = self.popen(command, **options)
             except OSError as exc:
                 self.logger.error(f'Cannot start /dev/{alias} on {arm}: {exc}')
                 self.failed.add((alias, arm))

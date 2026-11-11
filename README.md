@@ -16,7 +16,44 @@ source install/setup.bash
 
 Rebuild and source the workspace after updates.
 
-## Sensor setup
+## Windows (PowerShell)
+
+This is an `ament_python` package; no C++ compiler is required. On this PC,
+ROS 2 Jazzy, Python 3.12 and PyQt5 are installed under `C:\pixi_ws`.
+Use the existing ROS environment script and a regular build without
+`--symlink-install`:
+
+```powershell
+. 'C:\Users\ERIE_Lab\bin\rosenv.ps1'
+cd C:\ros2_ws
+python -m pip install pyserial
+colcon build --packages-select force_n
+. 'C:\Users\ERIE_Lab\bin\rosenv.ps1'
+ros2 launch force_n psm_sensors.launch.py
+```
+
+Add `gui:=false` for headless operation. In subsequent terminals, source
+`rosenv.ps1` and run the launch command. The package is installed under
+`C:\ros2_ws\install\force_n`; no repository-local activation script or virtual
+environment is needed.
+
+On Windows, the numeric device aliases in the table below resolve by USB
+serial number to their current COM ports; no udev installation is needed.
+Direct startup defaults to `/dev/400906`
+on Windows and `/dev/ttyACM0` on Linux. Missing or ambiguous sensors produce
+an error. To inspect devices or manually select a port:
+
+```powershell
+python -m serial.tools.list_ports -v
+ros2 run force_n force_n --port /dev/400906
+ros2 run force_n force_n --port COM3 --no-gui
+python -m pytest -q test
+```
+
+COM numbers can change; aliases identify the lab sensors reliably. Stop the
+manager before starting manual readers.
+
+## Sensor setup (Linux)
 
 Install [udev/99-forcen.rules](udev/99-forcen.rules) from this repository's root
 on each PC:

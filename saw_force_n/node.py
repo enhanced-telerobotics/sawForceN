@@ -1,4 +1,6 @@
 import argparse
+import os
+import signal
 import sys
 import rclpy
 from rclpy.node import Node
@@ -7,6 +9,7 @@ from geometry_msgs.msg import WrenchStamped
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from .driver import Driver
+from .ports import default_port
 
 
 class ForceNode(Node):
@@ -52,11 +55,14 @@ class ForceNode(Node):
 
 def main():
     parser = argparse.ArgumentParser(description='Forcen calibrated force sensor')
-    parser.add_argument('-p', '--port', default='/dev/ttyACM0')
+    parser.add_argument('-p', '--port', default=default_port())
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--frame-id', default='force_n_sensor')
     parser.add_argument('--no-gui', action='store_true')
     args = parser.parse_args(remove_ros_args(sys.argv)[1:])
+    if os.name == 'nt':
+        # The manager sends Ctrl+Break to this reader's process group.
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     rclpy.init(args=sys.argv)
     node = ForceNode(args)
     try:

@@ -1,11 +1,13 @@
 """Assignment and process lifecycle tests, without ROS or sensor hardware."""
 
 import signal
+from types import SimpleNamespace
 import subprocess
 from unittest.mock import Mock
 
 import pytest
 
+from saw_force_n import tool_manager
 from saw_force_n.tool_manager import ToolManager, parse_tool_map, tool_alias
 
 
@@ -77,7 +79,8 @@ def test_invalid_configuration(entries):
 
 
 @pytest.fixture
-def manager():
+def manager(monkeypatch):
+    monkeypatch.setattr(tool_manager, 'os', SimpleNamespace(name='posix'))
     processes = []
 
     def popen(command, **kwargs):
@@ -218,3 +221,13 @@ def test_shutdown_reaps_children(manager):
     process.send_signal.assert_called_once_with(signal.SIGINT)
     process.terminate.assert_called_once()
     assert not manager.readers
+
+
+def test_windows_reader_process_group_and_shutdown(manager, monkeypatch):
+    monkeypatch.setattr(tool_manager, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, raising=False)
+    monkeypatch.setattr(signal, 'CTRL_BREAK_EVENT', 1, raising=False)
+    select(manager)
+    assert manager.popen.call_args.kwargs == {'creationflags': 512}
+    select(manager, value='')
+    manager.processes[0].send_signal.assert_called_once_with(signal.CTRL_BREAK_EVENT)
