@@ -1,6 +1,7 @@
 """ATI-style Sensor Stats / Interval Stats tabs with hardware Rebias."""
 from PyQt5 import QtWidgets, QtCore
 from pathlib import Path
+from .tool_manager import TOOL_MODELS
 
 
 class Window(QtWidgets.QWidget):
@@ -10,7 +11,7 @@ class Window(QtWidgets.QWidget):
         arm = next((part for part in namespace.split('/')
                     if part in ('PSM1', 'PSM2', 'PSM3')), None)
         device = Path(driver.port).name
-        tool = device if device in ('CLASSIC_LND', 'S_LND', 'CLASSIC_MBF', 'S_MBF') else None
+        tool = device if device in TOOL_MODELS else None
         identity = f"{arm or namespace} — {tool or device}"
         self.setWindowTitle(f'Forcen Force Sensor — {identity}')
         layout = QtWidgets.QVBoxLayout(self)

@@ -5,16 +5,17 @@
 # Install into /etc/udev/rules.d/ following the repository README instructions.
 # Then reload rules with: sudo udevadm control --reload-rules
 # Reconnect the sensors to create their named aliases under /dev/.
-# These aliases follow the sensors regardless of ttyACM numbering or USB port.
+# Aliases use the ForceN model IDs from the dVRK custom tool index.
+# They follow the sensors regardless of ttyACM numbering or USB port.
 
-# CLASSIC_LND: observed as /dev/ttyACM0 on 2026-10-27.
-SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="2084358A4242", SYMLINK+="CLASSIC_LND"
+# Classic LND, physical model 400006.
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="2084358A4242", SYMLINK+="400906"
 
-# S_LND: observed as /dev/ttyACM1 on 2026-10-27.
-SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="206B35894242", SYMLINK+="S_LND"
+# Non-geared S LND, physical model 420006.
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="206B35894242", SYMLINK+="420906"
 
-# CLASSIC_MBF: observed as /dev/ttyACM1 on 2026-10-27.
-SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="209F35894242", SYMLINK+="CLASSIC_MBF"
+# First Classic MBF, physical model 400172.
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="209F35894242", SYMLINK+="400972"
 
-# S_MBF: observed as /dev/ttyACM0 on 2026-10-27.
-SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="205D358E4242", SYMLINK+="S_MBF"
+# Second Classic MBF, physical label 400172E (not an S-generation tool).
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{serial}=="205D358E4242", SYMLINK+="400872"
