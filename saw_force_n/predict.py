@@ -19,7 +19,7 @@ from sensor_msgs.msg import JointState
 from .frames import (ARM_COLUMNS, JAW_COLUMNS, SHAFT_JOINTS, force_in_ecm,
                      joint_features, quaternion_rotation)
 from .ros import TOOL_POLL_S, WRENCH_COLUMNS, ToolWatch, force_message, wrench_features
-from .tools import ARMS, MEASURED_CF, SHAFT_FRAME, shaft_namespace, tool_wrench_topic
+from .tools import ARMS, MEASURED_CF, SHAFT_FRAME, sensor_node_name, shaft_namespace
 
 
 @dataclass
@@ -51,7 +51,9 @@ class Predictor(Node):
             raise ValueError('Input timeouts must be positive and finite')
 
         self.model = None
+        self.sensor_topic = self.resolve_topic_name(MEASURED_CF)
         self.sensor_sub = None
+        self.sensor_gid = None
         self.inference_timer = None
         self.samples = {}
         self.last_sensor = None
@@ -59,7 +61,7 @@ class Predictor(Node):
         self.out_ecm = self.create_publisher(WrenchStamped, f'/{arm}/{MEASURED_CF}', 10)
 
         self.tools = ToolWatch(self, (arm,), self.select_model)
-        self.create_timer(TOOL_POLL_S, self.tools.scan)
+        self.create_timer(TOOL_POLL_S, self.scan)
         self.create_subscription(JointState, f'/{arm}/measured_js', self.on_arm, qos_profile_sensor_data)
         self.create_subscription(JointState, f'/{arm}/jaw/measured_js',
                                  self.on_jaw, qos_profile_sensor_data)
@@ -72,9 +74,7 @@ class Predictor(Node):
         self.model = None
         self.samples.clear()
         self.last_sensor = None
-        if self.sensor_sub is not None:
-            self.destroy_subscription(self.sensor_sub)
-            self.sensor_sub = None
+        self.set_sensor(None)
         if self.inference_timer is not None:
             self.destroy_timer(self.inference_timer)
             self.inference_timer = None
@@ -114,16 +114,41 @@ class Predictor(Node):
             self.model_sources.append('arm')
         if self.jaw_columns:
             self.model_sources.append('jaw')
-        # Raw readers can still be stopping when dVRK reports a different tool.
-        # A model-specific topic keeps the outgoing sensor out of the new model.
-        self.sensor_sub = self.create_subscription(
-            WrenchStamped, tool_wrench_topic(model),
-            lambda msg: self.on_sensor(msg, model), qos_profile_sensor_data,
-        )
         # The driver may publish faster than training. Consume each fresh sample
         # at most once, on the checkpoint-period ticks.
         self.inference_timer = self.create_timer(predictor.sample_period_s, self.tick)
         self.get_logger().info(f'Loaded {model} checkpoint {checkpoint} for {self.arm}')
+
+    def scan(self):
+        models = self.tools.scan()
+        if self.model is None:
+            return
+        # The previous reader can still be closing when the selection changes.
+        # Wait for the selected reader before joining the shared raw stream.
+        publishers = self.get_publishers_info_by_topic(self.sensor_topic)
+        gid = None
+        if len(publishers) == 1:
+            publisher = publishers[0]
+            if (publisher.node_namespace == self.get_namespace()
+                    and publisher.node_name == sensor_node_name(models[self.arm])):
+                gid = tuple(publisher.endpoint_gid)
+        self.set_sensor(gid)
+
+    def set_sensor(self, gid):
+        if gid == self.sensor_gid:
+            return
+        if self.sensor_sub is not None:
+            self.destroy_subscription(self.sensor_sub)
+            self.sensor_sub = None
+        self.sensor_gid = gid
+        self.samples.pop('sensor', None)
+        self.last_sensor = None
+        if self.model is not None:
+            self.model.reset()
+        if gid is not None:
+            self.sensor_sub = self.create_subscription(
+                WrenchStamped, MEASURED_CF, lambda msg: self.on_sensor(msg, gid), qos_profile_sensor_data,
+            )
 
     def cache(self, key, msg, read):
         if self.model is None:
@@ -148,8 +173,8 @@ class Predictor(Node):
                 self.model.reset()
             self.get_logger().warning(f'Invalid {key}: {exc}', throttle_duration_sec=5.0)
 
-    def on_sensor(self, msg, model):
-        if model == self.tools.models[self.arm]:
+    def on_sensor(self, msg, gid):
+        if gid == self.sensor_gid:
             self.cache('sensor', msg, lambda: wrench_features(msg, self.sensor_frame))
 
     def on_arm(self, msg):

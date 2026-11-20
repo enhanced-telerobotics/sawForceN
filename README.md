@@ -168,11 +168,11 @@ checkpoint's `tool_type` or `tool_types` metadata must match the selected ID.
 FCN, Transformer, and ridge checkpoints with shaft-frame outputs in newtons
 are supported. Restart the predictor or reselect the tool to reload a model.
 
-The sensor still publishes raw data on `/<PSM>/shaft/measured_cf`. The
-predictor subscribes to the same raw data on the tool-specific topic, such
-as `/<PSM>/shaft/tool_400872/measured_cf`, to keep the outgoing sensor's data
-out of the next tool's model. For explicitly registered revisions the topic
-uses a suffix such as `tool_400872_rev_2`.
+The sensor publishes one raw stream on `/<PSM>/shaft/measured_cf`. The
+predictor uses the dVRK tool selection to choose the model and waits for its
+reader to own that stream before processing it. The manager supplies the
+reader identity automatically. When starting a reader manually for prediction,
+pass `--tool-model` and use the same `/<PSM>/shaft` namespace.
 
 | Topic for PSM1 | Type | Meaning |
 | --- | --- | --- |

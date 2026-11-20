@@ -16,12 +16,12 @@ from std_srvs.srv import Trigger
 from .driver import Driver
 from .ports import default_port
 from .ros import force_message
-from .tools import MEASURED_CF, SHAFT_FRAME, model_id, tool_wrench_topic
+from .tools import MEASURED_CF, SHAFT_FRAME, model_id, sensor_node_name
 
 
 class Sensor(Node):
-    def __init__(self, args):
-        super().__init__('force_n')
+    def __init__(self, args, **kwargs):
+        super().__init__(sensor_node_name(args.tool_model), **kwargs)
         self.declare_parameter('serial_port', args.port)
         self.declare_parameter('baud_rate', args.baud)
         self.declare_parameter('frame_id', args.frame_id)
@@ -30,9 +30,6 @@ class Sensor(Node):
                              self.get_parameter('baud_rate').value,
                              self.get_parameter('tare_timeout').value)
         self.publisher = self.create_publisher(WrenchStamped, MEASURED_CF, 10)
-        self.tool_publisher = None
-        if args.tool_model:
-            self.tool_publisher = self.create_publisher(WrenchStamped, tool_wrench_topic(args.tool_model), 10)
         self.status = self.create_publisher(String, 'status', 10)
         self.create_service(Trigger, 'rebias', self.rebias)
         self.create_timer(.005, self.publish_samples)
@@ -50,8 +47,6 @@ class Sensor(Node):
         for force in self.driver.take_samples():
             msg = force_message(force, self.get_parameter('frame_id').value, self.get_clock().now().to_msg())
             self.publisher.publish(msg)
-            if self.tool_publisher is not None:
-                self.tool_publisher.publish(msg)
 
     def publish_status(self):
         state = self.driver.snapshot()['state']
@@ -87,7 +82,7 @@ def main():
     parser.add_argument('-p', '--port', default=default_port())
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--frame-id', default=SHAFT_FRAME)
-    parser.add_argument('--tool-model', help='canonical tool ID for the model-specific wrench topic')
+    parser.add_argument('--tool-model', help='canonical tool ID for the managed sensor identity')
     parser.add_argument('--no-gui', action='store_true')
     args = parser.parse_args(remove_ros_args(sys.argv)[1:])
     if args.tool_model is not None and model_id(args.tool_model) != args.tool_model:

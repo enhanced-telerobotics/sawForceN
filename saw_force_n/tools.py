@@ -52,7 +52,9 @@ def shaft_namespace(arm):
     return f'/{arm}/shaft'
 
 
-def tool_wrench_topic(model):
-    """Relative raw-wrench topic for an already canonical model ID."""
+def sensor_node_name(model):
+    """Identify the sensor process on the shared shaft topic."""
+    if model is None:
+        return 'force_n'
     token = model.replace('[', '_rev_').rstrip(']')
-    return f'tool_{token}/{MEASURED_CF}'
+    return f'force_n_{token}'
