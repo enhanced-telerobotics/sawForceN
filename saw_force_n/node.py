@@ -7,6 +7,7 @@ from geometry_msgs.msg import WrenchStamped
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from .driver import Driver
+from .tool_types import tool_model, tool_wrench_topic
 
 
 class ForceNode(Node):
@@ -20,6 +21,9 @@ class ForceNode(Node):
                              self.get_parameter('baud_rate').value,
                              self.get_parameter('tare_timeout').value)
         self.publisher = self.create_publisher(WrenchStamped, 'measured_cf', 10)
+        self.tool_publisher = None
+        if args.tool_model:
+            self.tool_publisher = self.create_publisher(WrenchStamped, tool_wrench_topic(args.tool_model), 10)
         self.status = self.create_publisher(String, 'status', 10)
         self.create_service(Trigger, 'rebias', self.rebias)
         self.create_timer(.005, self.publish_samples)
@@ -41,6 +45,8 @@ class ForceNode(Node):
             msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z = force
             # Torque fields remain zero: this device documents forces only.
             self.publisher.publish(msg)
+            if self.tool_publisher is not None:
+                self.tool_publisher.publish(msg)
 
     def publish_status(self):
         state = self.driver.snapshot()['state']
@@ -55,8 +61,11 @@ def main():
     parser.add_argument('-p', '--port', default='/dev/ttyACM0')
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--frame-id', default='force_n_sensor')
+    parser.add_argument('--tool-model', help='canonical tool ID for the model-specific wrench topic')
     parser.add_argument('--no-gui', action='store_true')
     args = parser.parse_args(remove_ros_args(sys.argv)[1:])
+    if args.tool_model is not None and tool_model(args.tool_model) != args.tool_model:
+        parser.error('--tool-model must be a canonical model ID such as 400872')
     rclpy.init(args=sys.argv)
     node = ForceNode(args)
     try:

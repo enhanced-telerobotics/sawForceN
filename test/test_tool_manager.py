@@ -104,6 +104,7 @@ def test_start_and_repeated_event(manager):
     process = manager.processes[0]
     assert process.command[-1] == '__ns:=/PSM1/shaft'
     assert '/dev/SENSOR_LND' in process.command
+    assert process.command[process.command.index('--tool-model') + 1] == '400906'
     assert '--no-gui' in process.command
     select(manager)
     assert len(manager.processes) == 1
@@ -158,6 +159,8 @@ def test_two_revisions_can_run_together_and_conflicts_are_per_sensor(manager):
     assert set(manager.readers) == {'400172_v1', '400172_v2'}
     assert '/dev/400172_v1' in manager.processes[0].command
     assert '/dev/400172_v2' in manager.processes[1].command
+    command = manager.processes[1].command
+    assert command[command.index('--tool-model') + 1] == '400972[2]'
     select(manager, 'PSM3', 'MBF_FORCEN:400972[1..1]')
     manager.processes[0].send_signal.assert_called_once_with(signal.SIGINT)
     manager.processes[1].send_signal.assert_not_called()

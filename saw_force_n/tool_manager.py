@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 
+from .tool_types import tool_model
+
 
 TOOL_MODELS = ('400906', '400972', '420906', '400872')
 DEFAULT_TOOL_MAP = [f'{model}={model}' for model in TOOL_MODELS]
@@ -32,23 +34,7 @@ def parse_tool_map(entries):
 
 
 def tool_alias(tool_type, tool_map):
-    # dVRK mtsToolList::Name emits NAME:MODEL[version_min..version_max].
-    match = re.fullmatch(
-        r'(?:[^:\[\]\s]+:)?([0-9]{6})(?:\[([0-9]+|[0-9]*\.\.[0-9]*)\])?',
-        tool_type.strip())
-    if not match:
-        return None
-    model, revision = match.groups()
-    if revision in (None, '..'):
-        return tool_map.get(model)
-    if '..' in revision:
-        lower, upper = revision.split('..')
-        if not lower or not upper or int(lower) != int(upper):
-            return None
-        revision = lower
-    # Explicit revisions require an exact mapping. In particular, an old
-    # 400972[2..2] message must never open the first MBF's /dev/400972 alias.
-    return tool_map.get(f'{model}[{int(revision)}]')
+    return tool_map.get(tool_model(tool_type))
 
 
 @dataclass
@@ -129,7 +115,8 @@ class ToolManager:
             if (alias in self.readers or (alias, arm) in self.failed
                     or any(reader.arm == arm for reader in self.readers.values())):
                 continue
-            command = [sys.executable, '-m', 'saw_force_n.node', '--port', f'/dev/{alias}']
+            command = [sys.executable, '-m', 'saw_force_n.node', '--port', f'/dev/{alias}',
+                       '--tool-model', tool_model(self.tool_types[arm])]
             if not self.gui:
                 command.append('--no-gui')
             command += ['--ros-args', '-r', f'__ns:=/{arm}/shaft']
