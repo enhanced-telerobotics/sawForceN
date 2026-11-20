@@ -2,6 +2,8 @@
 
 import os
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -16,8 +18,9 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-from saw_force_n.inference import ForcePredictor
-from saw_force_n.predictor_node import PredictorNode
+from saw_force_n import sensor as sensor_module
+from saw_force_n.models import ForcePredictor
+from saw_force_n.predict import Predictor
 
 
 def save_checkpoint(path, model='400872', gain=1.):
@@ -64,13 +67,26 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
     executor = SingleThreadedExecutor(context=context)
     source = Node('test_force_source', context=context)
     predictor = None
+    readers = []
     shaft, ecm = [], []
+    monkeypatch.setattr(sensor_module, 'Driver', Mock())
+
+    def reader_for(model):
+        args = SimpleNamespace(port='unused', baud=115200, frame_id='force_n_sensor', tool_model=model)
+        reader = sensor_module.Sensor(args, namespace='/PSM2/shaft', context=context)
+        readers.append(reader)
+        return reader
     try:
         tool = source.create_publisher(
             String, '/PSM2/tool_type', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )
-        sensor = source.create_publisher(WrenchStamped, '/PSM2/shaft/tool_400872/measured_cf', 10)
-        next_sensor = source.create_publisher(WrenchStamped, '/PSM2/shaft/tool_400972/measured_cf', 10)
+        initial_reader = reader_for('400872')
+        sensor = initial_reader.publisher
+        assert sensor.topic_name == '/PSM2/shaft/measured_cf'
+        outputs = source.get_publisher_names_and_types_by_node(initial_reader.get_name(), '/PSM2/shaft')
+        assert {name for name, types in outputs if 'geometry_msgs/msg/WrenchStamped' in types} == {
+            '/PSM2/shaft/measured_cf',
+        }
         arm = source.create_publisher(JointState, '/PSM2/measured_js', 10)
         jaw = source.create_publisher(JointState, '/PSM2/jaw/measured_js', 10)
         global_pose = source.create_publisher(PoseStamped, '/PSM2/measured_cp', 10)
@@ -78,7 +94,7 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
         source.create_subscription(WrenchStamped, '/PSM2/shaft/predicted_cf', shaft.append, 10)
         source.create_subscription(WrenchStamped, '/PSM2/measured_cf', ecm.append, 10)
         tool.publish(String(data='MBF_FORCEN:400872[..]'))
-        predictor = PredictorNode('PSM2', tmp_path, context=context)
+        predictor = Predictor('PSM2', tmp_path, context=context)
         executor.add_node(source)
         executor.add_node(predictor)
 
@@ -123,7 +139,7 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
             reader.publish(wrench)
             return stamp
 
-        spin_until(lambda: predictor.selected_model == '400872' and
+        spin_until(lambda: predictor.tools.models['PSM2'] == '400872' and
                    all(pub.get_subscription_count() for pub in (sensor, arm, jaw, global_pose, local_pose)) and
                    predictor.out_shaft.get_subscription_count() and predictor.out_ecm.get_subscription_count())
         stamp = publish_samples()
@@ -141,24 +157,31 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
         assert len(ecm) == 1
 
         tool.publish(String(data='MBF_FORCEN:400972[..]'))
-        spin_until(lambda: predictor.selected_model == '400972' and next_sensor.get_subscription_count())
+        spin_until(lambda: predictor.tools.models['PSM2'] == '400972' and predictor.sensor_sub is None)
+        next_sensor = reader_for('400972').publisher
         publish_samples()
-        deadline = time.monotonic() + 0.1
+        deadline = time.monotonic() + 0.3
         while time.monotonic() < deadline:
             executor.spin_once(timeout_sec=0.01)
+        assert predictor.sensor_sub is None
         assert len(shaft) == 2 and len(ecm) == 1
 
+        initial_reader.destroy_node()
+        readers.remove(initial_reader)
+        spin_until(lambda: next_sensor.get_subscription_count())
         stamp = publish_samples(reader=next_sensor)
         spin_until(lambda: len(shaft) == 3 and len(ecm) == 2)
         assert shaft[-1].header.stamp == ecm[-1].header.stamp == stamp
         assert shaft[-1].wrench.force.x == 4.
 
         source.destroy_publisher(tool)
-        spin_until(lambda: predictor.predictor is None and predictor.selected_model is None)
+        spin_until(lambda: predictor.model is None and predictor.tools.models['PSM2'] is None)
     finally:
         if predictor is not None:
             executor.remove_node(predictor)
             predictor.destroy_node()
+        for reader in readers:
+            reader.destroy_node()
         executor.remove_node(source)
         source.destroy_node()
         executor.shutdown()

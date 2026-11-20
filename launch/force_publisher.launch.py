@@ -11,7 +11,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('gui', default_value='true', choices=['true', 'false']),
         Node(
-            package='force_n', executable='force_n_tool_manager', name='force_n_tool_manager',
+            package='force_n', executable='force_publisher', name='force_n_tool_manager',
             parameters=[{'gui': ParameterValue(LaunchConfiguration('gui'), value_type=bool)}],
             output='screen',
         ),

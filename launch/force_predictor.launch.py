@@ -7,10 +7,8 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 
-from saw_force_n.predictor_node import model_directories
-
-
-ARMS = ('PSM1', 'PSM2', 'PSM3')
+from saw_force_n.predict import model_directories
+from saw_force_n.tools import ARMS
 
 
 def start_predictors(context):
@@ -18,9 +16,9 @@ def start_predictors(context):
     arms = ARMS if arm == 'all' else (arm,)
     return [
         ExecuteProcess(
-            cmd=[LaunchConfiguration('predictor_python'), '-m', 'saw_force_n.predictor_node',
+            cmd=[LaunchConfiguration('predictor_python'), '-m', 'saw_force_n.predict',
                  '--arm', psm, '--model-directory', LaunchConfiguration('model_directory')],
-            name=f'force_n_predictor_{psm}',
+            name=f'force_predictor_{psm}',
             output='screen',
         )
         for psm in arms

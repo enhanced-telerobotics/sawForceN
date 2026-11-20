@@ -48,7 +48,7 @@ the E-marked tool. Reinstall the rules, reload, and reconnect after alias change
 Start dVRK with the appropriate system configuration, then run:
 
 ```bash
-ros2 launch force_n psm_sensors.launch.py
+ros2 launch force_n force_publisher.launch.py
 ```
 
 Add `gui:=false` for headless operation. The manager watches
@@ -59,7 +59,7 @@ starting the new one. Removal, `ERROR`, an unregistered tool, or disappearance
 of the tool publisher from the ROS graph stops that arm's reader.
 
 Supported tool IDs are defined once in `TOOL_MODELS` in
-[saw_force_n/tool_manager.py](saw_force_n/tool_manager.py). The default mapping
+[saw_force_n/tools.py](saw_force_n/tools.py). The default mapping
 uses each model number as its device alias. Register each ID in dVRK's custom
 index without instance version fields. For example, `MBF_FORCEN:400872[..]`
 selects `/dev/400872`. No parameter file is needed.
@@ -103,7 +103,7 @@ save is used. Closing the GUI or pressing Ctrl+C stops streaming and closes seri
 Run the sensor launch on the computer connected to ForceN.
 
 ```bash
-ros2 launch force_n psm_sensors.launch.py gui:=false
+ros2 launch force_n force_publisher.launch.py gui:=false
 ```
 
 Run the predictor on either computer. One launch watches PSM1, PSM2, and
@@ -112,7 +112,7 @@ watch just one arm. When using separate computers, configure them for the
 same ROS 2 domain and network discovery, and synchronize their clocks.
 
 ```bash
-ros2 launch force_n force_prediction.launch.py
+ros2 launch force_n force_predictor.launch.py
 ```
 
 On the lab PC, the launch defaults to
@@ -131,11 +131,11 @@ checkpoint's `tool_type` or `tool_types` metadata must match the selected ID.
 FCN, Transformer, and ridge checkpoints with shaft-frame outputs in newtons
 are supported. Restart the predictor or reselect the tool to reload a model.
 
-The sensor still publishes raw data on `/<PSM>/shaft/measured_cf`. The
-predictor subscribes to the same raw data on the tool-specific topic, such
-as `/<PSM>/shaft/tool_400872/measured_cf`, to keep the outgoing sensor's data
-out of the next tool's model. For explicitly registered revisions the topic
-uses a suffix such as `tool_400872_rev_2`.
+The sensor publishes one raw stream on `/<PSM>/shaft/measured_cf`. The
+predictor uses the dVRK tool selection to choose the model and waits for its
+reader to own that stream before processing it. The manager supplies the
+reader identity automatically. When starting a reader manually for prediction,
+pass `--tool-model` and use the same `/<PSM>/shaft` namespace.
 
 | Topic for PSM1 | Type | Meaning |
 | --- | --- | --- |
@@ -154,3 +154,22 @@ base registration by cancelling their shared tool-tip rotation. The first
 four modified DH links yield the shaft rotation. The default sensor-to-roll
 rotation is identity, matching the ForceN training extractor. A checkpoint
 can supply a calibrated `roll_R_sensor_xyzw` quaternion.
+
+
+## Direct commands
+
+`ros2 run force_n force_publisher` starts the dVRK tool manager.
+`ros2 run force_n force_sensor` opens a single serial sensor. Pass `--port`
+to select its device.
+`ros2 run force_n force_predictor --arm PSM1` runs prediction for one arm
+when the executable's Python has PyTorch. The predictor launch selects the
+lab's PyTorch interpreter by default.
+
+## Code layout
+
+| Module | Responsibility |
+| --- | --- |
+| [sensor.py](saw_force_n/sensor.py) | Publishes calibrated force and exposes hardware tare. Uses `driver.py`, `protocol.py`, and `gui.py` for serial I/O and the optional UI. |
+| [manager.py](saw_force_n/manager.py) | Watches dVRK selections and hands serial process ownership to `readers.py`. |
+| [predict.py](saw_force_n/predict.py) | Selects checkpoints and publishes corrected shaft and ECM force. Uses `models.py` for inference and `frames.py` for kinematics. |
+| [tools.py](saw_force_n/tools.py), [ros.py](saw_force_n/ros.py) | Shared tool IDs, topic and frame names, wrench message handling, and subscriptions to retained tool selections. |
