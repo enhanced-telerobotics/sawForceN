@@ -5,7 +5,6 @@ import numpy as np
 ARM_JOINTS = ('yaw', 'pitch', 'insertion', 'roll', 'wrist_pitch', 'wrist_yaw')
 SHAFT_JOINTS = ('yaw_position', 'pitch_position', 'roll_position')
 JOINT_FIELDS = ('position', 'velocity', 'effort')
-WRENCH_COLUMNS = ('fx', 'fy', 'fz', 'tx', 'ty', 'tz')
 ARM_COLUMNS = tuple(f'{name}_{field}' for name in ARM_JOINTS for field in JOINT_FIELDS)
 JAW_COLUMNS = tuple(f'jaw_{field}' for field in JOINT_FIELDS)
 

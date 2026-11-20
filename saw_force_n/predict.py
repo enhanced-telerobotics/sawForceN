@@ -12,14 +12,14 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.logging import get_logger
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
 
-from .force_frames import (ARM_COLUMNS, JAW_COLUMNS, SHAFT_JOINTS, WRENCH_COLUMNS,
-                           force_in_ecm, joint_features, quaternion_rotation)
-from .tool_types import tool_model, tool_wrench_topic
+from .frames import (ARM_COLUMNS, JAW_COLUMNS, SHAFT_JOINTS, force_in_ecm,
+                     joint_features, quaternion_rotation)
+from .ros import TOOL_POLL_S, WRENCH_COLUMNS, ToolWatch, force_message, wrench_features
+from .tools import ARMS, MEASURED_CF, SHAFT_FRAME, shaft_namespace, tool_wrench_topic
 
 
 @dataclass
@@ -37,12 +37,12 @@ def model_directories(directory):
     return (config, ros) if requested == config else (requested,)
 
 
-class PredictorNode(Node):
+class Predictor(Node):
     def __init__(self, arm, model_directory='', **kwargs):
-        super().__init__('force_n_predictor', namespace=f'/{arm}/shaft', **kwargs)
+        super().__init__('force_n_predictor', namespace=shaft_namespace(arm), **kwargs)
         self.arm = arm
         self.model_dirs = model_directories(model_directory)
-        self.sensor_frame = self.declare_parameter('sensor_frame', 'force_n_sensor').value
+        self.sensor_frame = self.declare_parameter('sensor_frame', SHAFT_FRAME).value
         self.base_frame = self.declare_parameter('psm_base_frame', f'{arm}_base').value
         self.ecm_frame = self.declare_parameter('ecm_frame', 'ECM').value
         self.stale_timeout = self.declare_parameter('stale_timeout_s', 0.1).value
@@ -50,19 +50,16 @@ class PredictorNode(Node):
         if not all(np.isfinite(value) and value > 0 for value in (self.stale_timeout, self.max_skew)):
             raise ValueError('Input timeouts must be positive and finite')
 
-        self.selected_model = None
-        self.predictor = None
+        self.model = None
         self.sensor_sub = None
         self.inference_timer = None
         self.samples = {}
         self.last_sensor = None
         self.out_shaft = self.create_publisher(WrenchStamped, 'predicted_cf', 10)
-        self.out_ecm = self.create_publisher(WrenchStamped, f'/{arm}/measured_cf', 10)
+        self.out_ecm = self.create_publisher(WrenchStamped, f'/{arm}/{MEASURED_CF}', 10)
 
-        self.tool_topic = f'/{arm}/tool_type'
-        events = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(String, self.tool_topic, self.on_tool, events)
-        self.create_timer(0.2, self.check_tool_source)
+        self.tools = ToolWatch(self, (arm,), self.select_model)
+        self.create_timer(TOOL_POLL_S, self.tools.scan)
         self.create_subscription(JointState, f'/{arm}/measured_js', self.on_arm, qos_profile_sensor_data)
         self.create_subscription(JointState, f'/{arm}/jaw/measured_js',
                                  self.on_jaw, qos_profile_sensor_data)
@@ -71,18 +68,8 @@ class PredictorNode(Node):
         self.create_subscription(PoseStamped, f'/{arm}/local/measured_cp',
                                  self.on_base_pose, qos_profile_sensor_data)
 
-    def on_tool(self, msg):
-        self.select_model(tool_model(msg.data))
-
-    def check_tool_source(self):
-        if self.selected_model and self.count_publishers(self.tool_topic) == 0:
-            self.select_model(None)
-
-    def select_model(self, model):
-        if model == self.selected_model:
-            return
-        self.selected_model = model
-        self.predictor = None
+    def select_model(self, _arm, model):
+        self.model = None
         self.samples.clear()
         self.last_sensor = None
         if self.sensor_sub is not None:
@@ -103,7 +90,7 @@ class PredictorNode(Node):
                 return
             import torch
 
-            from .inference import ForcePredictor
+            from .models import ForcePredictor
 
             torch.set_num_threads(1)
             predictor = ForcePredictor(checkpoint, model)
@@ -118,7 +105,7 @@ class PredictorNode(Node):
             self.get_logger().warning(f'Cannot load {filename}: {exc}')
             return
 
-        self.predictor = predictor
+        self.model = predictor
         self.roll_R_sensor = roll_R_sensor
         self.arm_columns = tuple(c for c in columns if c in ARM_COLUMNS)
         self.jaw_columns = tuple(c for c in columns if c in JAW_COLUMNS)
@@ -139,7 +126,7 @@ class PredictorNode(Node):
         self.get_logger().info(f'Loaded {model} checkpoint {checkpoint} for {self.arm}')
 
     def cache(self, key, msg, read):
-        if self.predictor is None:
+        if self.model is None:
             return
         stamp = msg.header.stamp
         ns = stamp.sec * 1_000_000_000 + stamp.nanosec
@@ -158,33 +145,22 @@ class PredictorNode(Node):
         except ValueError as exc:
             self.samples.pop(key, None)
             if key in self.model_sources:
-                self.predictor.reset()
+                self.model.reset()
             self.get_logger().warning(f'Invalid {key}: {exc}', throttle_duration_sec=5.0)
 
     def on_sensor(self, msg, model):
-        if model != self.selected_model:
-            return
-
-        def read():
-            if msg.header.frame_id != self.sensor_frame:
-                raise ValueError(f'expected frame {self.sensor_frame!r}, got {msg.header.frame_id!r}')
-            f, t = msg.wrench.force, msg.wrench.torque
-            values = (f.x, f.y, f.z, t.x, t.y, t.z)
-            if not np.isfinite(values).all():
-                raise ValueError('wrench contains nonfinite values')
-            return dict(zip(WRENCH_COLUMNS, values))
-
-        self.cache('sensor', msg, read)
+        if model == self.tools.models[self.arm]:
+            self.cache('sensor', msg, lambda: wrench_features(msg, self.sensor_frame))
 
     def on_arm(self, msg):
-        if self.predictor is None:
+        if self.model is None:
             return
         if self.arm_columns:
             self.cache('arm', msg, lambda: joint_features(msg, self.arm_columns))
         self.cache('shaft_joints', msg, lambda: joint_features(msg, SHAFT_JOINTS))
 
     def on_jaw(self, msg):
-        if self.predictor is not None and self.jaw_columns:
+        if self.model is not None and self.jaw_columns:
             self.cache('jaw', msg, lambda: joint_features(msg, self.jaw_columns))
 
     def on_pose(self, key, frame, msg):
@@ -215,21 +191,13 @@ class PredictorNode(Node):
         return ((len(stamps) < 2 or (max(stamps) - min(stamps)) / 1e9 <= self.max_skew)
                 and (len(stamps) == len(samples) or max(receipts) - min(receipts) <= self.max_skew))
 
-    @staticmethod
-    def wrench(force, frame, stamp):
-        msg = WrenchStamped()
-        msg.header.stamp = stamp
-        msg.header.frame_id = frame
-        msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z = map(float, force)
-        return msg
-
     def tick(self):
         now = time.monotonic()
         ros_now = self.get_clock().now()
-        if self.predictor is None:
+        if self.model is None:
             return
         if not self.fresh(self.model_sources, now, ros_now.nanoseconds):
-            self.predictor.reset()
+            self.model.reset()
             return
         sensor = self.samples['sensor']
         key = (sensor.stamp_ns, 0.0 if sensor.stamp_ns else sensor.received)
@@ -240,37 +208,37 @@ class PredictorNode(Node):
         for source in self.model_sources:
             features.update(self.samples[source].value)
         try:
-            prediction = self.predictor.predict(
-                [features[column] for column in self.predictor.input_columns],
+            prediction = self.model.predict(
+                [features[column] for column in self.model.input_columns],
                 sensor.stamp_ns / 1e9 if sensor.stamp_ns else sensor.received,
             )
         except (ValueError, RuntimeError) as exc:
-            self.predictor.reset()
+            self.model.reset()
             self.get_logger().warning(f'Prediction rejected: {exc}', throttle_duration_sec=5.0)
             return
         if prediction is None:
             return
 
         stamp = sensor.msg.header.stamp if sensor.stamp_ns else ros_now.to_msg()
-        self.out_shaft.publish(self.wrench(prediction, self.sensor_frame, stamp))
+        self.out_shaft.publish(force_message(prediction, self.sensor_frame, stamp))
         frame_sources = [*self.model_sources, 'shaft_joints', 'ecm_pose', 'base_pose']
         if self.fresh(frame_sources, now, ros_now.nanoseconds):
             ecm_force = force_in_ecm(
                 prediction, self.samples['shaft_joints'].value, self.roll_R_sensor,
                 self.samples['ecm_pose'].value, self.samples['base_pose'].value,
             )
-            self.out_ecm.publish(self.wrench(ecm_force, self.ecm_frame, stamp))
+            self.out_ecm.publish(force_message(ecm_force, self.ecm_frame, stamp))
 
 
 def main():
     parser = argparse.ArgumentParser(description='Publish corrected shaft and ECM force')
-    parser.add_argument('--arm', required=True, choices=('PSM1', 'PSM2', 'PSM3'))
+    parser.add_argument('--arm', required=True, choices=ARMS)
     parser.add_argument('--model-directory', default='')
     args = parser.parse_args(remove_ros_args()[1:])
     rclpy.init()
     node = None
     try:
-        node = PredictorNode(args.arm, args.model_directory)
+        node = Predictor(args.arm, args.model_directory)
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass

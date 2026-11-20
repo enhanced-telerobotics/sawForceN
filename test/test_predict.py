@@ -16,8 +16,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-from saw_force_n.inference import ForcePredictor
-from saw_force_n.predictor_node import PredictorNode
+from saw_force_n.models import ForcePredictor
+from saw_force_n.predict import Predictor
 
 
 def save_checkpoint(path, model='400872', gain=1.):
@@ -78,7 +78,7 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
         source.create_subscription(WrenchStamped, '/PSM2/shaft/predicted_cf', shaft.append, 10)
         source.create_subscription(WrenchStamped, '/PSM2/measured_cf', ecm.append, 10)
         tool.publish(String(data='MBF_FORCEN:400872[..]'))
-        predictor = PredictorNode('PSM2', tmp_path, context=context)
+        predictor = Predictor('PSM2', tmp_path, context=context)
         executor.add_node(source)
         executor.add_node(predictor)
 
@@ -123,7 +123,7 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
             reader.publish(wrench)
             return stamp
 
-        spin_until(lambda: predictor.selected_model == '400872' and
+        spin_until(lambda: predictor.tools.models['PSM2'] == '400872' and
                    all(pub.get_subscription_count() for pub in (sensor, arm, jaw, global_pose, local_pose)) and
                    predictor.out_shaft.get_subscription_count() and predictor.out_ecm.get_subscription_count())
         stamp = publish_samples()
@@ -141,7 +141,7 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
         assert len(ecm) == 1
 
         tool.publish(String(data='MBF_FORCEN:400972[..]'))
-        spin_until(lambda: predictor.selected_model == '400972' and next_sensor.get_subscription_count())
+        spin_until(lambda: predictor.tools.models['PSM2'] == '400972' and next_sensor.get_subscription_count())
         publish_samples()
         deadline = time.monotonic() + 0.1
         while time.monotonic() < deadline:
@@ -154,7 +154,7 @@ def test_shaft_and_ecm_output_for_active_tool(tmp_path, monkeypatch):
         assert shaft[-1].wrench.force.x == 4.
 
         source.destroy_publisher(tool)
-        spin_until(lambda: predictor.predictor is None and predictor.selected_model is None)
+        spin_until(lambda: predictor.model is None and predictor.tools.models['PSM2'] is None)
     finally:
         if predictor is not None:
             executor.remove_node(predictor)
