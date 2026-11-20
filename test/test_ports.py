@@ -1,8 +1,9 @@
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from saw_force_n import ports
+from saw_force_n import driver, ports
 
 
 def sensor(device='COM12', serial='2084358A4242'):
@@ -50,3 +51,31 @@ def test_windows_model_aliases(monkeypatch, model, serial):
     monkeypatch.setattr(ports.list_ports, 'comports', lambda: [sensor(serial=serial)])
     assert ports.resolve_port('/dev/' + model) == 'COM12'
     assert ports.resolve_port(model) == 'COM12'
+
+
+def test_windows_driver_reads_from_resolved_com_port(monkeypatch):
+    monkeypatch.setattr(ports, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(ports.list_ports, 'comports', lambda: [sensor()])
+    worker = driver.Driver('/dev/400906')
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    connection.in_waiting = 64
+    sample = b'<1000 -2000 3000>'
+    replies = iter([b'<e0x1>', b'<r0x123>', *([b'<e0x1>'] * 4), sample])
+
+    def read(_size):
+        reply = next(replies)
+        if reply == sample:
+            worker.stop_event.set()
+        return reply
+
+    connection.read.side_effect = read
+    open_serial = MagicMock(return_value=connection)
+    monkeypatch.setattr(driver.serial, 'Serial', open_serial)
+    worker.run()
+
+    open_serial.assert_called_once_with('COM12', 115200, timeout=.1, write_timeout=1, exclusive=True)
+    assert worker.snapshot()['count'] == 1
+    assert worker.snapshot()['state'] == 'Stopped'
+    connection.write.assert_called_with(b'<SDM0>')
+    connection.__exit__.assert_called_once_with(None, None, None)

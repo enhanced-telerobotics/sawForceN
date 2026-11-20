@@ -14,7 +14,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from saw_force_n.tool_manager_node import ToolManagerNode
+from saw_force_n.manager import Manager
 
 
 def test_retained_selection_transfer_conflict_and_publisher_loss(tmp_path, monkeypatch):
@@ -52,8 +52,8 @@ def test_retained_selection_transfer_conflict_and_publisher_loss(tmp_path, monke
         psm2 = source.create_publisher(String, '/PSM2/tool_type', qos)
         psm1.publish(String(data='LND_FORCEN:400906[..]'))
         # Publish before creating the subscriber to exercise retained delivery.
-        manager_node = ToolManagerNode(context=context, parameter_overrides=[Parameter('gui', value=False)])
-        manager_node.manager.popen = spawn
+        manager_node = Manager(context=context, parameter_overrides=[Parameter('gui', value=False)])
+        manager_node.readers.popen = spawn
         executor.add_node(source)
         executor.add_node(manager_node)
         until(lambda: len(processes) == 1)
@@ -61,22 +61,22 @@ def test_retained_selection_transfer_conflict_and_publisher_loss(tmp_path, monke
         assert '--no-gui' in processes[0].command
 
         psm2.publish(String(data='LND_FORCEN:400906[..]'))
-        until(lambda: bool(manager_node.manager.conflicts) and not manager_node.manager.readers)
+        until(lambda: bool(manager_node.readers.conflicts) and not manager_node.readers.readers)
         assert len(processes) == 1
         psm1.publish(String(data=''))
         until(lambda: len(processes) == 2)
         assert processes[1].command[-1] == '__ns:=/PSM2/shaft'
 
         source.destroy_publisher(psm2)
-        until(lambda: not manager_node.manager.readers)
-        assert manager_node.manager.tool_types['PSM2'] == ''
+        until(lambda: not manager_node.readers.readers)
+        assert manager_node.tools.models['PSM2'] is None
 
         # Both Classic MBFs have distinct custom models and separate readers.
         psm2 = source.create_publisher(String, '/PSM2/tool_type', qos)
         psm1.publish(String(data='MBF_FORCEN:400972[..]'))
         psm2.publish(String(data='MBF_FORCEN:400872[..]'))
-        until(lambda: set(manager_node.manager.readers) == {'400972', '400872'})
-        assert not manager_node.manager.conflicts
+        until(lambda: set(manager_node.readers.readers) == {'400972', '400872'})
+        assert not manager_node.readers.conflicts
         assert {process.command[process.command.index('--port') + 1]
                 for process in processes[-2:]} == {'/dev/400972', '/dev/400872'}
     finally:

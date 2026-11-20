@@ -7,8 +7,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from saw_force_n import tool_manager
-from saw_force_n.tool_manager import ToolManager, parse_tool_map, tool_alias
+from saw_force_n import readers
+from saw_force_n.readers import Readers
+from saw_force_n.tools import ARMS, model_id, parse_tool_map
 
 
 @pytest.mark.parametrize('value', [
@@ -16,7 +17,7 @@ from saw_force_n.tool_manager import ToolManager, parse_tool_map, tool_alias
     ' LND_FORCEN:400906[..] ',
 ])
 def test_custom_model(value):
-    assert tool_alias(value, {'400906': 'SENSOR_LND'}) == 'SENSOR_LND'
+    assert {'400906': 'SENSOR_LND'}.get(model_id(value)) == 'SENSOR_LND'
 
 
 @pytest.mark.parametrize('value', [
@@ -24,7 +25,7 @@ def test_custom_model(value):
     'LND_FORCEN:400906extra', 'LND_FORCEN:400906[broken]',
 ])
 def test_unregistered_or_invalid_tool(value):
-    assert tool_alias(value, {'400906': 'SENSOR_LND'}) is None
+    assert {'400906': 'SENSOR_LND'}.get(model_id(value)) is None
 
 
 @pytest.mark.parametrize('value, expected', [
@@ -43,7 +44,7 @@ def test_unregistered_or_invalid_tool(value):
 ])
 def test_physical_tools_with_same_model(value, expected):
     mapping = parse_tool_map(['400972[1]=400172_v1', '400972[2]=400172_v2'])
-    assert tool_alias(value, mapping) == expected
+    assert mapping.get(model_id(value)) == expected
 
 
 @pytest.mark.parametrize('value, expected', [
@@ -61,7 +62,7 @@ def test_physical_tools_with_same_model(value, expected):
 ])
 def test_flat_models_and_obsolete_instance_ids(value, expected):
     mapping = parse_tool_map(['400972=400972', '400872=400872'])
-    assert tool_alias(value, mapping) == expected
+    assert mapping.get(model_id(value)) == expected
 
 
 @pytest.mark.parametrize('entries', [
@@ -80,7 +81,7 @@ def test_invalid_configuration(entries):
 
 @pytest.fixture
 def manager(monkeypatch):
-    monkeypatch.setattr(tool_manager, 'os', SimpleNamespace(name='posix'))
+    monkeypatch.setattr(readers, 'os', SimpleNamespace(name='posix'))
     processes = []
 
     def popen(command, **kwargs):
@@ -90,23 +91,25 @@ def manager(monkeypatch):
         processes.append(process)
         return process
 
-    result = ToolManager(['PSM1', 'PSM2', 'PSM3'],
-                         {'400906': 'SENSOR_LND', '400907': 'OTHER'},
-                         Mock(), gui=False, popen=Mock(side_effect=popen), clock=Mock(return_value=0))
+    result = Readers({'400906': 'SENSOR_LND', '400907': 'OTHER'},
+                     Mock(), gui=False, popen=Mock(side_effect=popen), clock=Mock(return_value=0))
+    result.models = dict.fromkeys(ARMS)
     result.processes = processes
     return result
 
 
 def select(manager, arm='PSM1', value='LND_FORCEN:400906[..]'):
-    manager.update(arm, value)
-    manager.reconcile()
+    manager.models[arm] = model_id(value)
+    manager.reconcile(manager.models)
 
 
 def test_start_and_repeated_event(manager):
     select(manager)
     process = manager.processes[0]
+    assert process.command[1:3] == ['-m', 'saw_force_n.sensor']
     assert process.command[-1] == '__ns:=/PSM1/shaft'
     assert '/dev/SENSOR_LND' in process.command
+    assert process.command[process.command.index('--tool-model') + 1] == '400906'
     assert '--no-gui' in process.command
     select(manager)
     assert len(manager.processes) == 1
@@ -115,12 +118,12 @@ def test_start_and_repeated_event(manager):
 def test_move_waits_for_old_process_exit(manager):
     select(manager)
     old = manager.processes[0]
-    manager.update('PSM1', '')
+    manager.models['PSM1'] = None
     select(manager, 'PSM3')
     old.send_signal.assert_called_once_with(signal.SIGINT)
     assert len(manager.processes) == 1
     old.poll.return_value = 0
-    manager.reconcile()
+    manager.reconcile(manager.models)
     assert len(manager.processes) == 2
     assert manager.processes[-1].command[-1] == '__ns:=/PSM3/shaft'
 
@@ -131,7 +134,7 @@ def test_replacing_tool_waits_for_namespace(manager):
     select(manager, value='OTHER:400907[..]')
     assert len(manager.processes) == 1
     old.poll.return_value = 0
-    manager.reconcile()
+    manager.reconcile(manager.models)
     assert '/dev/OTHER' in manager.processes[-1].command
 
 
@@ -141,10 +144,10 @@ def test_duplicate_tool_stops_until_conflict_resolves(manager):
     select(manager, 'PSM2')
     old.send_signal.assert_called_once_with(signal.SIGINT)
     old.poll.return_value = 0
-    manager.reconcile()
+    manager.reconcile(manager.models)
     assert not manager.readers
-    manager.update('PSM1', '')
-    manager.reconcile()
+    manager.models['PSM1'] = None
+    manager.reconcile(manager.models)
     assert manager.processes[-1].command[-1] == '__ns:=/PSM2/shaft'
 
 
@@ -161,6 +164,8 @@ def test_two_revisions_can_run_together_and_conflicts_are_per_sensor(manager):
     assert set(manager.readers) == {'400172_v1', '400172_v2'}
     assert '/dev/400172_v1' in manager.processes[0].command
     assert '/dev/400172_v2' in manager.processes[1].command
+    command = manager.processes[1].command
+    assert command[command.index('--tool-model') + 1] == '400972[2]'
     select(manager, 'PSM3', 'MBF_FORCEN:400972[1..1]')
     manager.processes[0].send_signal.assert_called_once_with(signal.SIGINT)
     manager.processes[1].send_signal.assert_not_called()
@@ -177,25 +182,25 @@ def test_removal_or_non_forcen_tool_stops_reader(manager, value):
 def test_stuck_process_escalates_before_replacement(manager):
     select(manager)
     old = manager.processes[0]
-    manager.update('PSM1', '')
+    manager.models['PSM1'] = None
     select(manager, 'PSM2')
     manager.clock.return_value = 5
-    manager.reconcile()
+    manager.reconcile(manager.models)
     old.terminate.assert_called_once()
     manager.clock.return_value = 7
-    manager.reconcile()
+    manager.reconcile(manager.models)
     old.kill.assert_called_once()
     assert len(manager.processes) == 1
     old.poll.return_value = -9
-    manager.reconcile()
+    manager.reconcile(manager.models)
     assert len(manager.processes) == 2
 
 
 def test_unexpected_exit_does_not_respawn_loop(manager):
     select(manager)
     manager.processes[0].poll.return_value = 1
-    manager.reconcile()
-    manager.reconcile()
+    manager.reconcile(manager.models)
+    manager.reconcile(manager.models)
     assert len(manager.processes) == 1
     select(manager, value='')
     select(manager)
@@ -205,7 +210,7 @@ def test_unexpected_exit_does_not_respawn_loop(manager):
 def test_spawn_failure_can_retry_after_assignment_change(manager):
     manager.popen.side_effect = OSError('Cannot execute')
     select(manager)
-    manager.reconcile()
+    manager.reconcile(manager.models)
     assert manager.popen.call_count == 1
     assert not manager.readers
     select(manager, value='')
@@ -224,7 +229,7 @@ def test_shutdown_reaps_children(manager):
 
 
 def test_windows_reader_process_group_and_shutdown(manager, monkeypatch):
-    monkeypatch.setattr(tool_manager, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(readers, 'os', SimpleNamespace(name='nt'))
     monkeypatch.setattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, raising=False)
     monkeypatch.setattr(signal, 'CTRL_BREAK_EVENT', 1, raising=False)
     select(manager)
